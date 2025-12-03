@@ -1,6 +1,15 @@
 import { useState, useRef, useEffect } from 'react';
 import { MicrophoneIcon, StopIcon, PlayIcon, PauseIcon, ArrowPathIcon } from '@heroicons/react/24/solid';
 
+// Extend the Window interface to include webkitSpeechRecognition
+declare global {
+  interface Window {
+    webkitSpeechRecognition: typeof SpeechRecognition;
+  }
+}
+
+type SpeechRecognitionType = typeof window.SpeechRecognition;
+
 type VoiceRecorderProps = {
   onRecordingComplete: (audioBlob: Blob) => void;
   onTextUpdate: (text: string) => void;
@@ -13,10 +22,42 @@ export default function VoiceRecorder({ onRecordingComplete, onTextUpdate, isPro
   const [recordedAudio, setRecordedAudio] = useState<Blob | null>(null);
   const [audioUrl, setAudioUrl] = useState<string>('');
   const [error, setError] = useState<string>('');
+  const [interimTranscript, setInterimTranscript] = useState<string>('');
+  const recognitionRef = useRef<SpeechRecognition | null>(null);
   
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  useEffect(() => {
+    // Initialize speech recognition if available
+    if ('webkitSpeechRecognition' in window) {
+      const SpeechRecognition = window.SpeechRecognition || (window as any).webkitSpeechRecognition;
+      const recognition = new SpeechRecognition() as SpeechRecognition;
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      
+      recognition.onresult = (event: any) => {
+        let interimTranscript = '';
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          if (event.results[i].isFinal) {
+            onTextUpdate(event.results[i][0].transcript);
+          } else {
+            interimTranscript += event.results[i][0].transcript;
+          }
+        }
+        setInterimTranscript(interimTranscript);
+      };
+
+      recognitionRef.current = recognition;
+    }
+
+    return () => {
+      if (recognitionRef.current) {
+        recognitionRef.current.stop();
+      }
+    };
+  }, [onTextUpdate]);
 
   useEffect(() => {
     return () => {
@@ -29,10 +70,17 @@ export default function VoiceRecorder({ onRecordingComplete, onTextUpdate, isPro
   const startRecording = async () => {
     try {
       setError('');
+      setInterimTranscript('');
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       audioChunksRef.current = [];
       
-      mediaRecorderRef.current = new MediaRecorder(stream);
+      mediaRecorderRef.current = new MediaRecorder(stream, {
+        mimeType: 'audio/webm;codecs=opus'
+      });
+      
+      if (recognitionRef.current) {
+        recognitionRef.current.start();
+      }
       
       mediaRecorderRef.current.ondataavailable = (event) => {
         if (event.data.size > 0) {
@@ -174,10 +222,24 @@ export default function VoiceRecorder({ onRecordingComplete, onTextUpdate, isPro
         )}
       </div>
       
-      {isProcessing && (
-        <div className="flex items-center justify-center">
-          <div className="w-6 h-6 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
-          <span className="ml-2 text-gray-600">Processing...</span>
+      {(isProcessing || interimTranscript) && (
+        <div className="mt-4 space-y-2">
+          <label className="block text-sm font-medium text-gray-700">
+            {isProcessing ? 'Processing...' : 'Transcribing...'}
+          </label>
+          <textarea
+            className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+            rows={4}
+            value={interimTranscript}
+            readOnly
+            placeholder="Your transcribed text will appear here..."
+          />
+          {isProcessing && (
+            <div className="flex items-center mt-2">
+              <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
+              <span className="ml-2 text-sm text-gray-600">Processing audio...</span>
+            </div>
+          )}
         </div>
       )}
     </div>

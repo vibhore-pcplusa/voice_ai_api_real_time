@@ -1,4 +1,4 @@
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit
 import os
@@ -7,6 +7,7 @@ import speech_recognition as sr
 from gtts import gTTS
 import tempfile
 import uuid
+import subprocess
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -29,29 +30,85 @@ def health_check():
 
 @app.route('/api/speech-to-text', methods=['POST'])
 def speech_to_text():
+    print("Received request to /api/speech-to-text")  # Debug log
+    
     if 'audio' not in request.files:
+        print("No audio file in request")  # Debug log
         return jsonify({"error": "No audio file provided"}), 400
     
     audio_file = request.files['audio']
     if audio_file.filename == '':
+        print("Empty filename")  # Debug log
         return jsonify({"error": "No selected file"}), 400
     
+    temp_audio_path = None
+    converted_audio_path = None
     try:
+        # Log file info
+        print(f"Received file: {audio_file.filename}, Content-Type: {audio_file.content_type}")
+        
+        # Ensure upload directory exists
+        os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+        
         # Save the audio file temporarily
-        temp_audio_path = os.path.join(app.config['UPLOAD_FOLDER'], f"temp_audio_{uuid.uuid4().hex}.wav")
+        temp_audio_path = os.path.join(app.config['UPLOAD_FOLDER'], f"temp_audio_{uuid.uuid4().hex}.{audio_file.filename.split('.')[-1] if '.' in audio_file.filename else 'webm'}")
+        print(f"Saving audio to: {temp_audio_path}")
         audio_file.save(temp_audio_path)
         
-        # Use the recognizer to convert speech to text
-        with sr.AudioFile(temp_audio_path) as source:
-            audio_data = recognizer.record(source)
-            text = recognizer.recognize_google(audio_data)
+        # Verify file exists and has content
+        if not os.path.exists(temp_audio_path) or os.path.getsize(temp_audio_path) == 0:
+            raise Exception("Failed to save audio file or file is empty")
         
-        # Clean up the temporary file
-        os.remove(temp_audio_path)
+        # Convert to WAV if needed
+        converted_audio_path = os.path.join(app.config['UPLOAD_FOLDER'], f"converted_audio_{uuid.uuid4().hex}.wav")
+        print(f"Converting audio to WAV: {converted_audio_path}")
+        
+        # Use ffmpeg to convert to WAV
+        try:
+            subprocess.run([
+                'ffmpeg', '-i', temp_audio_path, 
+                '-acodec', 'pcm_s16le', 
+                '-ar', '16000', 
+                '-ac', '1',
+                converted_audio_path
+            ], check=True, capture_output=True)
+        except subprocess.CalledProcessError as e:
+            print(f"FFmpeg conversion failed: {e.stderr.decode()}")
+            # Try without conversion first
+            converted_audio_path = temp_audio_path
+        
+        print("Attempting to recognize speech...")  # Debug log
+        # Use the recognizer to convert speech to text
+        with sr.AudioFile(converted_audio_path) as source:
+            print("Audio file opened successfully")  # Debug log
+            audio_data = recognizer.record(source)
+            print("Audio recorded, recognizing...")  # Debug log
+            text = recognizer.recognize_google(audio_data)
+            print(f"Recognized text: {text}")  # Debug log
         
         return jsonify({"text": text})
+        
+    except sr.UnknownValueError:
+        error_msg = "Could not understand audio"
+        print(error_msg)  # Debug log
+        return jsonify({"error": error_msg}), 400
+    except sr.RequestError as e:
+        error_msg = f"Could not request results from Google Speech Recognition service; {e}"
+        print(error_msg)  # Debug log
+        return jsonify({"error": error_msg}), 503
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        error_msg = f"Error processing audio: {str(e)}"
+        print(error_msg)  # Debug log
+        return jsonify({"error": error_msg}), 500
+    finally:
+        # Clean up the temporary files if they exist
+        for temp_file in [temp_audio_path, converted_audio_path]:
+            if temp_file and os.path.exists(temp_file):
+                try:
+                    os.remove(temp_file)
+                    print(f"Removed temporary file: {temp_file}")  # Debug log
+                except Exception as e:
+                    print(f"Error removing temporary file: {e}")  # Debug log
 
 @app.route('/api/text-to-speech', methods=['POST'])
 def text_to_speech():
@@ -78,7 +135,7 @@ def text_to_speech():
 
 @app.route('/api/audio/<filename>', methods=['GET'])
 def get_audio(filename):
-    return app.send_from_directory(app.config['UPLOAD_FOLDER'], filename)
+    return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
 
 @socketio.on('connect')
 def handle_connect():

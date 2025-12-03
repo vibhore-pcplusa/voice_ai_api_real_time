@@ -13,9 +13,14 @@ function App() {
       const formData = new FormData();
       formData.append('audio', audioBlob, 'recording.wav');
 
-      const response = await fetch('/api/speech-to-text', {
+      // Use the full backend URL
+      const response = await fetch('http://localhost:5000/api/speech-to-text', {
         method: 'POST',
         body: formData,
+        // Don't set Content-Type header, let the browser set it with the correct boundary
+        headers: {
+          'Accept': 'application/json'
+        }
       });
 
       if (response.ok) {
@@ -34,7 +39,7 @@ function App() {
   const handleTextSubmit = async (text: string) => {
     setIsProcessing(true);
     try {
-      const response = await fetch('/api/text-to-speech', {
+      const response = await fetch('http://localhost:5000/api/text-to-speech', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -44,8 +49,8 @@ function App() {
 
       if (response.ok) {
         const data = await response.json();
-        // Play the generated audio
-        const audio = new Audio(data.url);
+        // Play the generated audio using full backend URL
+        const audio = new Audio(`http://localhost:5000${data.url}`);
         audio.play();
       } else {
         console.error('Text-to-speech failed');
